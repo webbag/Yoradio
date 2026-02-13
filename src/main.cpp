@@ -26,9 +26,28 @@
 Audio audio;
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
 
+// Definicje stacji radiowych
+struct Station {
+    const char* name;
+    const char* url;
+};
+
+const Station stations[] = {
+    {"RMF FM", "http://195.150.20.242:8000/rmf_fm"},
+    {"SomaFM Groove Salad", "http://ice5.somafm.com/groovesalad-128-mp3"},
+    {"SomaFM Beat Blender", "http://ice5.somafm.com/beatblender-128-mp3"},
+    {"SomaFM Folk Forward", "http://ice5.somafm.com/folkfwd-128-mp3"},
+    {"Radio Nowy Swiat", "http://stream.nowyswiat.online/mp3"},
+    {"Radio ZET", "http://zet090-02.cdn.eurozet.pl:8404/"}
+};
+const int numStations = sizeof(stations) / sizeof(stations[0]);
+int currentStationIndex = 0;
+
 // Zmienne sterujące
 int volume = 10;
 int lastClk = HIGH;
+int lastButtonState = HIGH;
+unsigned long lastPressTime = 0;
 
 // ===== NOWY SYSTEM CALLBACKÓW (v3.4.4) =====
 void my_audio_info(Audio::msg_t m) {
@@ -36,14 +55,25 @@ void my_audio_info(Audio::msg_t m) {
 
     switch (m.e) {
         case Audio::evt_streamtitle:
-            // Tu odbierasz metadane (tytuł utworu)
-            tft.fillRect(10, 150, 300, 40, ILI9341_BLACK);
-            tft.setCursor(10, 150);
+            tft.fillRect(0, 100, 320, 60, ILI9341_BLACK); // Czyszczenie obszaru tytułu
+            tft.setCursor(10, 100);
+            tft.setTextSize(2);
             tft.setTextColor(ILI9341_YELLOW);
-            tft.println(m.msg); 
+            tft.println(m.msg);
             break;
-        case Audio::evt_info:
-            // Status połączenia
+        case Audio::evt_name:
+            tft.fillRect(0, 40, 320, 40, ILI9341_BLACK); // Czyszczenie obszaru nazwy stacji
+            tft.setCursor(10, 40);
+            tft.setTextSize(2);
+            tft.setTextColor(ILI9341_GREEN);
+            tft.println(m.msg);
+            break;
+        case Audio::evt_bitrate:
+            tft.fillRect(0, 180, 320, 20, ILI9341_BLACK);
+            tft.setCursor(10, 180);
+            tft.setTextSize(1);
+            tft.setTextColor(ILI9341_CYAN);
+            tft.printf("Bitrate: %s", m.msg);
             break;
     }
 }
@@ -80,7 +110,7 @@ void setup() {
     pinMode(ENC_B, INPUT_PULLUP);
     pinMode(ENC_KEY, INPUT_PULLUP);
 
-    audio.connecttohost("http://ice5.somafm.com/groovesalad-128-mp3");
+    audio.connecttohost(stations[currentStationIndex].url);
 }
 
 void loop() {
@@ -97,6 +127,72 @@ void loop() {
         }
         audio.setVolume(volume);
         Serial.printf("Glosnosc: %d\n", volume);
+        
+        // Aktualizacja głośności na ekranie
+        tft.fillRect(10, 200, 100, 20, ILI9341_BLACK);
+        tft.setCursor(10, 200);
+        tft.setTextSize(1);
+        tft.setTextColor(ILI9341_WHITE);
+        tft.printf("Vol: %d", volume);
     }
     lastClk = clk;
-}
+
+    // Obsługa przycisku enkodera (zmiana stacji)
+    int buttonState = digitalRead(ENC_KEY);
+    if (buttonState == LOW && lastButtonState == HIGH && (millis() - lastPressTime > 250)) { // Debounce 250ms
+        lastPressTime = millis();
+        currentStationIndex++;
+        if (currentStationIndex >= numStations) {
+            currentStationIndex = 0;
+        }
+        Serial.printf("Zmiana stacji na: %s\n", stations[currentStationIndex].name);
+        audio.connecttohost(stations[currentStationIndex].url);
+
+        // Czyszczenie starego tytułu i bitrate
+        tft.fillRect(0, 100, 320, 60, ILI9341_BLACK); 
+        tft.fillRect(0, 180, 320, 20, ILI9341_BLACK);
+
+        // Wyświetl nazwę nowej stacji na TFT
+        tft.fillRect(0, 40, 320, 40, ILI9341_BLACK); 
+        tft.setCursor(10, 40);
+        tft.setTextSize(2);
+        tft.setTextColor(ILI9341_GREEN);
+        tft.println(stations[currentStationIndex].name);
+    }
+    lastButtonState = buttonState;
+
+    // Aktualizacja interfejsu co 1 sekundę (RSSI)
+    static uint32_t lastDebugTime = 0;
+    if (millis() - lastDebugTime > 1000) {
+        lastDebugTime = millis();
+        
+        // Diagnostyka Serial
+        uint32_t buffFilled = audio.inBufferFilled();
+        uint32_t buffTotal = audio.getInBufferSize();
+        Serial.printf("DIAG: Heap: %u b | Buff: %u/%u (%u%%) | Bitrate: %u\n", 
+            ESP.getFreeHeap(), 
+            buffFilled, buffTotal, (buffTotal > 0 ? buffFilled * 100 / buffTotal : 0),
+            audio.getBitRate());
+            
+        // Wyświetlanie RSSI
+        int rssi = WiFi.RSSI();
+        tft.fillRect(240, 0, 80, 20, ILI9341_BLACK);
+        tft.setCursor(240, 5);
+        tft.setTextSize(1);
+        tft.setTextColor(ILI9341_WHITE);
+        tft.printf("%d dBm", rssi);
+
+        // Pasek bufora (Buffer Bar)
+        if (buffTotal > 0) {
+            int barWidth = 300;
+            int barHeight = 8;
+            int barX = 10;
+            int barY = 230;
+            int filledWidth = (buffFilled * barWidth) / buffTotal;
+
+            tft.drawRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2, ILI9341_WHITE); // Ramka
+            tft.fillRect(barX, barY, filledWidth, barHeight, ILI9341_GREEN);              // Wypełnienie
+            tft.fillRect(barX + filledWidth, barY, barWidth - filledWidth, barHeight, ILI9341_BLACK); // Tło (czyszczenie)
+        }
+    }
+   }

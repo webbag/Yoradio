@@ -1,4 +1,4 @@
-## Radio Internetowe ESP32-S3 N16R8 (v3.4.4)
+## Radio Internetowe ESP32-S3 N16R8
 
 Zaawansowany system audio oparty na ESP32-S3, wykorzystujący zewnętrzny przetwornik DAC I2S oraz 
 wyświetlacz TFT. Projekt został zoptymalizowany pod kątem stabilności strumieniowania dzięki wykorzystaniu 8MB pamięci PSRAM.
