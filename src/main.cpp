@@ -49,33 +49,54 @@ int lastClk = HIGH;
 int lastButtonState = HIGH;
 unsigned long lastPressTime = 0;
 
+// ===== POMOCNICZE FUNKCJE UI =====
+void updateText(int x, int y, int w, int h, const char* text, uint16_t color, uint8_t size, bool wrap = false) {
+    tft.fillRect(x, y, w, h, ILI9341_BLACK); // Kluczowe: czyszczenie tła przed pisaniem
+    tft.setCursor(x, y + 4); // Margines
+    tft.setTextColor(color);
+    tft.setTextSize(size);
+    tft.setTextWrap(wrap);
+    tft.print(text);
+}
+
 // ===== NOWY SYSTEM CALLBACKÓW (v3.4.4) =====
 void my_audio_info(Audio::msg_t m) {
-    Serial.printf("AUDIO_EVENT: %s: %s\n", m.s, m.msg);
+    // Logowanie wszystkich zdarzeń do Serial
+    Serial.printf("AUDIO_EVENT [%s]: %s\n", m.s, m.msg);
 
     switch (m.e) {
         case Audio::evt_streamtitle:
-            tft.fillRect(0, 100, 320, 60, ILI9341_BLACK); // Czyszczenie obszaru tytułu
-            tft.setCursor(10, 100);
-            tft.setTextSize(2);
-            tft.setTextColor(ILI9341_YELLOW);
-            tft.println(m.msg);
+            // Obszar tytułu - większy, z zawijaniem tekstu
+            updateText(0, 80, 320, 80, m.msg, ILI9341_YELLOW, 2, true);
             break;
         case Audio::evt_name:
-            tft.fillRect(0, 40, 320, 40, ILI9341_BLACK); // Czyszczenie obszaru nazwy stacji
-            tft.setCursor(10, 40);
-            tft.setTextSize(2);
-            tft.setTextColor(ILI9341_GREEN);
-            tft.println(m.msg);
+            // Nazwa stacji
+            updateText(0, 30, 320, 40, m.msg, ILI9341_GREEN, 2, false);
             break;
         case Audio::evt_bitrate:
-            tft.fillRect(0, 180, 320, 20, ILI9341_BLACK);
-            tft.setCursor(10, 180);
-            tft.setTextSize(1);
-            tft.setTextColor(ILI9341_CYAN);
-            tft.printf("Bitrate: %s", m.msg);
+            // Aktualizacja paska info (Bitrate / SampleRate)
+            char infoBuff[64];
+            snprintf(infoBuff, sizeof(infoBuff), "%u kbps | %u Hz", audio.getBitRate()/1000, audio.getSampleRate());
+            updateText(0, 170, 320, 20, infoBuff, ILI9341_CYAN, 1, false);
+            break;
+        default:
             break;
     }
+}
+
+void drawInterface() {
+    tft.fillScreen(ILI9341_BLACK);
+    // Linie oddzielające sekcje
+    tft.drawFastHLine(0, 25, 320, ILI9341_DARKGREY);  // Pod statusem
+    tft.drawFastHLine(0, 75, 320, ILI9341_DARKGREY);  // Pod nazwą stacji
+    tft.drawFastHLine(0, 165, 320, ILI9341_DARKGREY); // Pod tytułem
+    tft.drawFastHLine(0, 200, 320, ILI9341_DARKGREY); // Nad stopką
+    
+    // Etykiety statyczne
+    tft.setCursor(2, 205);
+    tft.setTextColor(ILI9341_LIGHTGREY);
+    tft.setTextSize(1);
+    tft.print("Buf:");
 }
 
 void setup() {
@@ -89,9 +110,9 @@ void setup() {
     SPI.begin(TFT_SCK, TFT_MISO, TFT_MOSI, TFT_CS);
     tft.begin();
     tft.setRotation(1);
-    tft.fillScreen(ILI9341_BLACK);
-    tft.setTextColor(ILI9341_WHITE);
-    tft.println("Radio Startuje...");
+    
+    drawInterface();
+    updateText(0, 30, 320, 40, "Laczenie WiFi...", ILI9341_WHITE, 2);
 
     // 3. Połączenie WiFi
     WiFi.begin(SECRET_SSID, SECRET_PASS);
@@ -100,6 +121,7 @@ void setup() {
         Serial.print(".");
     }
     Serial.println("\nWiFi OK!");
+    updateText(0, 30, 320, 40, "WiFi OK!", ILI9341_GREEN, 2);
 
     // 4. Inicjalizacja Audio
     audio.setPinout(I2S_BCK, I2S_LCK, I2S_DIN);
@@ -128,12 +150,10 @@ void loop() {
         audio.setVolume(volume);
         Serial.printf("Glosnosc: %d\n", volume);
         
-        // Aktualizacja głośności na ekranie
-        tft.fillRect(10, 200, 100, 20, ILI9341_BLACK);
-        tft.setCursor(10, 200);
-        tft.setTextSize(1);
-        tft.setTextColor(ILI9341_WHITE);
-        tft.printf("Vol: %d", volume);
+        // Aktualizacja głośności na ekranie (Pasek statusu - lewa strona)
+        char volBuff[16];
+        snprintf(volBuff, sizeof(volBuff), "Vol: %d", volume);
+        updateText(5, 5, 80, 20, volBuff, ILI9341_WHITE, 1);
     }
     lastClk = clk;
 
@@ -148,16 +168,10 @@ void loop() {
         Serial.printf("Zmiana stacji na: %s\n", stations[currentStationIndex].name);
         audio.connecttohost(stations[currentStationIndex].url);
 
-        // Czyszczenie starego tytułu i bitrate
-        tft.fillRect(0, 100, 320, 60, ILI9341_BLACK); 
-        tft.fillRect(0, 180, 320, 20, ILI9341_BLACK);
-
-        // Wyświetl nazwę nowej stacji na TFT
-        tft.fillRect(0, 40, 320, 40, ILI9341_BLACK); 
-        tft.setCursor(10, 40);
-        tft.setTextSize(2);
-        tft.setTextColor(ILI9341_GREEN);
-        tft.println(stations[currentStationIndex].name);
+        // Reset UI dla nowej stacji
+        updateText(0, 80, 320, 80, "", ILI9341_BLACK, 2); // Czyść tytuł
+        updateText(0, 30, 320, 40, stations[currentStationIndex].name, ILI9341_GREEN, 2);
+        drawInterface(); // Odśwież linie
     }
     lastButtonState = buttonState;
 
@@ -166,28 +180,31 @@ void loop() {
     if (millis() - lastDebugTime > 1000) {
         lastDebugTime = millis();
         
-        // Diagnostyka Serial
         uint32_t buffFilled = audio.inBufferFilled();
         uint32_t buffTotal = audio.getInBufferSize();
-        Serial.printf("DIAG: Heap: %u b | Buff: %u/%u (%u%%) | Bitrate: %u\n", 
-            ESP.getFreeHeap(), 
-            buffFilled, buffTotal, (buffTotal > 0 ? buffFilled * 100 / buffTotal : 0),
-            audio.getBitRate());
+        
+        // --- PEŁNA DIAGNOSTYKA SERIAL ---
+        Serial.println("\n--- DIAGNOSTYKA SYSTEMU ---");
+        Serial.printf("RAM: Free: %u | MaxAlloc: %u | Total: %u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap(), ESP.getHeapSize());
+        if (ESP.getPsramSize() > 0) Serial.printf("PSRAM: Free: %u | Total: %u\n", ESP.getFreePsram(), ESP.getPsramSize());
+        Serial.printf("WiFi: RSSI: %d dBm | Status: %d\n", WiFi.RSSI(), WiFi.status());
+        Serial.printf("Audio: Bitrate: %u | SampleRate: %u | Channels: %d | Bits: %d\n", audio.getBitRate(), audio.getSampleRate(), audio.getChannels(), audio.getBitsPerSample());
+        Serial.printf("Buffer: %u / %u (%u%%)\n", buffFilled, buffTotal, (buffTotal > 0 ? buffFilled * 100 / buffTotal : 0));
+        Serial.printf("Stream Time: %u s | Duration: %u s\n", audio.getAudioCurrentTime(), audio.getAudioFileDuration());
+        Serial.println("---------------------------");
             
-        // Wyświetlanie RSSI
+        // Wyświetlanie RSSI (Prawy górny róg)
         int rssi = WiFi.RSSI();
-        tft.fillRect(240, 0, 80, 20, ILI9341_BLACK);
-        tft.setCursor(240, 5);
-        tft.setTextSize(1);
-        tft.setTextColor(ILI9341_WHITE);
-        tft.printf("%d dBm", rssi);
+        char rssiBuff[16];
+        snprintf(rssiBuff, sizeof(rssiBuff), "%d dBm", rssi);
+        updateText(240, 5, 80, 20, rssiBuff, ILI9341_WHITE, 1);
 
         // Pasek bufora (Buffer Bar)
         if (buffTotal > 0) {
-            int barWidth = 300;
-            int barHeight = 8;
-            int barX = 10;
-            int barY = 230;
+            int barWidth = 280;
+            int barHeight = 10;
+            int barX = 30;
+            int barY = 205;
             int filledWidth = (buffFilled * barWidth) / buffTotal;
 
             tft.drawRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2, ILI9341_WHITE); // Ramka
