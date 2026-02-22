@@ -35,19 +35,22 @@ struct Station
 
 const Station stations[] = {
 
-    {"3 ", "https://live.wostreaming.net/direct/ppm-jazz24mp3-ibc1"},
-    {"1 ", "https://stream13.polskieradio.pl/pr3/pr3.sdp/playlist.m3u8"},
-    {"4 ", "http://stream.srg-ssr.ch/m/rsj/mp3_128"},
-    {"5 ", "http://stream.nowyswiat.online/mp3"},
-    {"6 ", "https://stream15.polskieradio.pl/pr24/pr24.sdp/playlist.m3u8"},
-    {"2 ", "http://ice5.somafm.com/groovesalad-128-mp3"},
+    {"5", "http://stream.nowyswiat.online/mp3"},
+    {"13", "http://195.150.20.242:8000/rmf_fm"},
+    {"3", "https://live.wostreaming.net/direct/ppm-jazz24mp3-ibc1"},
+    {"1", "https://stream13.polskieradio.pl/pr3/pr3.sdp/playlist.m3u8"},
+    {"4", "http://stream.srg-ssr.ch/m/rsj/mp3_128"},
+    
+    {"6", "https://stream15.polskieradio.pl/pr24/pr24.sdp/playlist.m3u8"},
+    {"2", "http://ice5.somafm.com/groovesalad-128-mp3"},
 
-    {"7 ", "https://go-audio.toya.net.pl/63214"},
-    {"8 ", "http://stream4.nadaje.com:8578/poznan"},
-    {"9 ", "https://houseoffunk.eu:8443/live"},
+    {"7", "https://go-audio.toya.net.pl/63214"},
+    {"8", "http://stream4.nadaje.com:8578/poznan"},
+    {"9", "https://houseoffunk.eu:8443/live"},
     {"10", "https://radio.pejpal.cloud/stream"},
     {"11", "https://dancewave.online/dance.mp3"},
     {"12", "http://198.15.94.34:8006/strumień"},
+        
 
     // {"RMF FM", "http://195.150.20.242:8000/rmf_fm"},
     // {"KEXP", "https://kexp-mp3-128.streamguys1.com/kexp128.mp3"},
@@ -86,7 +89,7 @@ const int numStations = sizeof(stations) / sizeof(stations[0]);
 int currentStationIndex = 0;
 
 // Zmienne sterujące
-int volume = 10;
+int volume = 18;
 int lastClk = HIGH;
 int lastButtonState = HIGH;
 unsigned long lastPressTime = 0;
@@ -94,12 +97,40 @@ unsigned long lastPressTime = 0;
 // ===== POMOCNICZE FUNKCJE UI =====
 void updateText(int x, int y, int w, int h, const char *text, uint16_t color, uint8_t size, bool wrap = false)
 {
-    tft.fillRect(x, y, w, h, ILI9341_MAGENTA); // Kluczowe: czyszczenie tła przed pisaniem
-    tft.setCursor(x, y + 1);                   // Margines
+    tft.fillRect(x, y, w, h, ILI9341_BLACK);   // Kluczowe: czyszczenie tła przed pisaniem
+    tft.setCursor(x, y + 4);                   // Margines
     tft.setTextColor(color);
     tft.setTextSize(size);
     tft.setTextWrap(wrap);
     tft.print(text);
+}
+
+void drawBar(int x, int y, int w, int h, int val, int maxVal, const char *label, uint16_t color)
+{
+    // Etykieta
+    tft.fillRect(x, y, 35, h, ILI9341_BLACK);
+    tft.setCursor(x, y + (h / 2) - 4);
+    tft.setTextColor(ILI9341_WHITE);
+    tft.setTextSize(1);
+    tft.print(label);
+
+    // Pasek tło
+    int barX = x + 35;
+    int barW = w - 80; // Rezerwacja miejsca na etykietę i %
+    tft.drawRect(barX, y, barW, h, ILI9341_WHITE);
+
+    // Wypełnienie paska
+    if (maxVal == 0) maxVal = 1;
+    int fillW = (val * (barW - 2)) / maxVal;
+    if (fillW > barW - 2) fillW = barW - 2;
+    tft.fillRect(barX + 1, y + 1, fillW, h - 2, color);
+    tft.fillRect(barX + 1 + fillW, y + 1, barW - 2 - fillW, h - 2, ILI9341_BLACK);
+
+    // Wartość procentowa
+    tft.fillRect(barX + barW + 5, y, 40, h, ILI9341_BLACK);
+    tft.setCursor(barX + barW + 5, y + (h / 2) - 4);
+    tft.print((val * 100) / maxVal);
+    tft.print("%");
 }
 
 // ===== NOWY SYSTEM CALLBACKÓW (v3.4.4) =====
@@ -111,17 +142,14 @@ void my_audio_info(Audio::msg_t m)
     switch (m.e)
     {
     case Audio::evt_streamtitle:
-        updateText(0, 80, 320, 80, m.msg, ILI9341_YELLOW, 2, true);
+        // Tytuł utworu w sekcji Metadata (linia 2)
+        updateText(0, 75, 320, 45, m.msg, ILI9341_YELLOW, 2, true);
         break;
     case Audio::evt_name:
-        // Nazwa stacji
-        updateText(0, 30, 320, 40, m.msg, ILI9341_GREEN, 2, false);
+        // Nazwa stacji w sekcji Metadata (linia 1)
+        updateText(0, 45, 320, 30, m.msg, ILI9341_GREEN, 2, false);
         break;
     case Audio::evt_bitrate:
-        // Aktualizacja paska info (Bitrate / SampleRate)
-        char infoBuff[64];
-        snprintf(infoBuff, sizeof(infoBuff), "%u kbps | %u Hz", audio.getBitRate() / 1000, audio.getSampleRate());
-        updateText(0, 170, 320, 20, infoBuff, ILI9341_CYAN, 1, false);
         break;
     default:
         break;
@@ -131,17 +159,18 @@ void my_audio_info(Audio::msg_t m)
 void drawInterface()
 {
     tft.fillScreen(ILI9341_BLACK);
-    // Linie oddzielające sekcje
-    tft.drawFastHLine(0, 25, 320, ILI9341_DARKGREY);  // Pod statusem
-    tft.drawFastHLine(0, 75, 320, ILI9341_DARKGREY);  // Pod nazwą stacji
-    tft.drawFastHLine(0, 165, 320, ILI9341_DARKGREY); // Pod tytułem
-    tft.drawFastHLine(0, 200, 320, ILI9341_DARKGREY); // Nad stopką
+    tft.drawRect(0, 0, 320, 240, ILI9341_WHITE); // Ramka dookoła
 
-    // Etykiety statyczne
-    tft.setCursor(2, 205);
-    tft.setTextColor(ILI9341_LIGHTGREY);
-    tft.setTextSize(1);
-    tft.print("Buf:");
+    // Linie oddzielające sekcje
+    tft.drawFastHLine(0, 20, 320, ILI9341_WHITE);  // Pod nagłówkiem
+    tft.drawFastHLine(0, 40, 320, ILI9341_WHITE);  // Pod URL
+    tft.drawFastHLine(0, 120, 320, ILI9341_WHITE); // Pod Metadata
+    tft.drawFastHLine(0, 160, 320, ILI9341_WHITE); // Pod Pustą sekcją 1
+    tft.drawFastHLine(0, 210, 320, ILI9341_WHITE); // Pod Paskami
+
+    // Teksty statyczne dla pustych sekcji
+    updateText(0, 135, 320, 20, "Pusta sekcja do wykorzystania", ILI9341_DARKGREY, 1);
+    updateText(0, 220, 320, 20, "Pusta sekcja do wykorzystania", ILI9341_DARKGREY, 1);
 }
 
 void setup()
@@ -158,7 +187,9 @@ void setup()
     tft.setRotation(1);
 
     drawInterface();
-    updateText(0, 30, 320, 40, "Laczenie WiFi...", ILI9341_WHITE, 2);
+    tft.setRotation(3);
+    updateText(0, 45, 320, 30, "Laczenie WiFi...", ILI9341_WHITE, 2);
+    
 
     // 3. Połączenie WiFi
     WiFi.begin(SECRET_SSID, SECRET_PASS);
@@ -168,19 +199,15 @@ void setup()
         Serial.print(".");
     }
     Serial.println("\nWiFi OK!");
-    updateText(0, 30, 320, 40, "WiFi OK!", ILI9341_GREEN, 2);
+    updateText(0, 45, 320, 30, "WiFi OK!", ILI9341_GREEN, 2);
 
     // 4. Inicjalizacja Audio
     audio.setPinout(I2S_BCK, I2S_LCK, I2S_DIN);
     audio.setVolume(volume); // Zakres 0...21 [5]
 
-    updateText(0, 30, 320, 20,
-               stations[currentStationIndex].name,
-               ILI9341_GREEN, 2, false);
-
-    updateText(0, 55, 320, 20,
-               stations[currentStationIndex].url,
-               ILI9341_CYAN, 1, false);
+    char urlBuff[128];
+    snprintf(urlBuff, sizeof(urlBuff), "[%02d] %s", stations[currentStationIndex].name, stations[currentStationIndex].url);
+    updateText(0, 22, 320, 18, urlBuff, ILI9341_WHITE, 1);
 
     // 5. Enkoder
     pinMode(ENC_A, INPUT_PULLUP);
@@ -212,10 +239,8 @@ void loop()
         audio.setVolume(volume);
         Serial.printf("Glosnosc: %d\n", volume);
 
-        // Aktualizacja głośności na ekranie (Pasek statusu - lewa strona)
-        char volBuff[16];
-        snprintf(volBuff, sizeof(volBuff), "Vol: %d", volume);
-        updateText(5, 5, 80, 20, volBuff, ILI9341_WHITE, 1);
+        // Aktualizacja paska głośności
+        drawBar(5, 170, 310, 15, volume, 21, "VOL", ILI9341_GREEN);
     }
     lastClk = clk;
 
@@ -233,10 +258,12 @@ void loop()
         audio.connecttohost(stations[currentStationIndex].url);
 
         // Reset UI dla nowej stacji
-        updateText(0, 80, 320, 80, "", ILI9341_BLACK, 2); // Czyść tytuł
-        updateText(0, 30, 320, 40, stations[currentStationIndex].name, ILI9341_GREEN, 2);
-        drawInterface(); // Odśwież linie
-    }
+        char urlBuff[128];
+        snprintf(urlBuff, sizeof(urlBuff), "[%02d] %s", currentStationIndex, stations[currentStationIndex].url);
+        updateText(0, 22, 320, 18, urlBuff, ILI9341_WHITE, 1);
+        updateText(0, 45, 320, 30, stations[currentStationIndex].name, ILI9341_GREEN, 2); // Nazwa z tablicy jako placeholder
+        updateText(0, 75, 320, 45, "", ILI9341_BLACK, 2); // Czyść tytuł
+     }
     lastButtonState = buttonState;
 
     // Aktualizacja interfejsu co 1 sekundę (RSSI)
@@ -259,24 +286,13 @@ void loop()
         Serial.printf("Stream Time: %u s | Duration: %u s\n", audio.getAudioCurrentTime(), audio.getAudioFileDuration());
         Serial.println("---------------------------");
 
-        // Wyświetlanie RSSI (Prawy górny róg)
-        int rssi = WiFi.RSSI();
-        char rssiBuff[16];
-        snprintf(rssiBuff, sizeof(rssiBuff), "%d dBm", rssi);
-        updateText(240, 5, 80, 20, rssiBuff, ILI9341_WHITE, 1);
+        // Aktualizacja Nagłówka (SampleRate, Bitrate, RSSI)
+        char headBuff[64];
+        snprintf(headBuff, sizeof(headBuff), "%uHz   %ukbps       RSSI %ddBm", 
+                 audio.getSampleRate(), audio.getBitRate()/1000, WiFi.RSSI());
+        updateText(0, 0, 320, 20, headBuff, ILI9341_WHITE, 1);
 
-        // Pasek bufora (Buffer Bar)
-        if (buffTotal > 0)
-        {
-            int barWidth = 280;
-            int barHeight = 10;
-            int barX = 30;
-            int barY = 205;
-            int filledWidth = (buffFilled * barWidth) / buffTotal;
-
-            tft.drawRect(barX - 1, barY - 1, barWidth + 2, barHeight + 2, ILI9341_WHITE);             // Ramka
-            tft.fillRect(barX, barY, filledWidth, barHeight, ILI9341_GREEN);                          // Wypełnienie
-            tft.fillRect(barX + filledWidth, barY, barWidth - filledWidth, barHeight, ILI9341_BLACK); // Tło (czyszczenie)
-        }
+        // Aktualizacja paska bufora
+        drawBar(5, 190, 310, 15, buffFilled, buffTotal, "BUF", ILI9341_ORANGE);
     }
 }
