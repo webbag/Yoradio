@@ -5,6 +5,8 @@
 #include "Adafruit_GFX.h"
 #include "Adafruit_ILI9341.h"
 #include "config.h"
+#include "RotaryEncoder.h"
+#include <Preferences.h>
 
 // ===== KONFIGURACJA PINÓW =====
 #define TFT_CS 5
@@ -25,6 +27,8 @@
 // ===== OBIEKTY =====
 Audio audio;
 Adafruit_ILI9341 tft = Adafruit_ILI9341(TFT_CS, TFT_DC, TFT_RST);
+RotaryEncoder encoder(ENC_A, ENC_B, RotaryEncoder::LatchMode::FOUR3);
+Preferences preferences;
 
 // Definicje stacji radiowych
 struct Station
@@ -52,10 +56,17 @@ const int numStations = sizeof(stations) / sizeof(stations[0]);
 int currentStationIndex = 0;
 
 // Zmienne sterujące
-int volume = 18;
-int lastClk = HIGH;
-int lastButtonState = HIGH;
-unsigned long lastPressTime = 0;
+int volume = 12;                 // Zostawiamy na wypadek przyszłego użycia
+int lastButtonState = HIGH;      // Stan fizyczny pinu (do debounce)
+int currentButtonState = HIGH;   // Stan logiczny przycisku
+unsigned long lastDebounceTime = 0;
+unsigned long lastRotationTime = 0; // Czas ostatniego obrotu enkodera
+bool pendingChange = false;         // Flaga oczekująca na zmianę stacji
+
+// Funkcja obsługi przerwania (ISR) dla enkodera
+void IRAM_ATTR readEncoderISR() {
+  encoder.tick();
+}
 
 // ===== POMOCNICZE FUNKCJE UI =====
 void updateText(int x, int y, int w, int h, const char *text, uint16_t color, uint8_t size, bool wrap = false)
@@ -129,10 +140,6 @@ void displaySongTitle(const char* text) {
     updateText(5, 77, 310, 90, text, ILI9341_YELLOW, 2, true);
 }
 
-void displayVolumeBar(int val, int maxVal) {
-    drawBar(5, 170, 310, 15, val, maxVal, "VOL", ILI9341_GREEN);
-}
-
 void displayBufferBar(int val, int maxVal) {
     drawBar(5, 190, 310, 15, val, maxVal, "BUF", ILI9341_ORANGE);
 }
@@ -191,11 +198,17 @@ void initEncoder()
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
     pinMode(ENC_KEY, INPUT_PULLUP);
+    // lastClk = digitalRead(ENC_A); // Zastąpione przez bibliotekę
+
+    // Podłączenie przerwań dla pinów enkodera
+    attachInterrupt(digitalPinToInterrupt(ENC_A), readEncoderISR, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(ENC_B), readEncoderISR, CHANGE);
 }
 
 void changeStation(int index)
 {
     currentStationIndex = index;
+    preferences.putInt("station", currentStationIndex); // Zapisz nową stację
     if (currentStationIndex >= numStations) currentStationIndex = 0;
     if (currentStationIndex < 0) currentStationIndex = numStations - 1;
 
@@ -209,41 +222,45 @@ void changeStation(int index)
     displaySongTitle("..."); // Wyczyszczenie poprzedniego tytułu
 }
 
-void handleVolume()
-{
-    int clk = digitalRead(ENC_A);
-    if (clk != lastClk && clk == LOW)
-    {
-        if (digitalRead(ENC_B) != clk)
-        {
-            if (volume < 21) volume++;
-        }
-        else
-        {
-            if (volume > 0) volume--;
-        }
-        audio.setVolume(volume);
-        Serial.printf("Glosnosc: %d\n", volume);
-        displayVolumeBar(volume, 21);
-    }
-    lastClk = clk;
-}
-
 void handleEncoderButton()
 {
-    int buttonState = digitalRead(ENC_KEY);
-    if (buttonState == LOW && lastButtonState == HIGH && (millis() - lastPressTime > 250))
-    {
-        lastPressTime = millis();
-        changeStation(currentStationIndex + 1);
+    // Jeśli enkoder był obracany w ciągu ostatnich 500ms, ignoruj potencjalne zakłócenia na przycisku.
+    // To zapobiega przypadkowej zmianie stacji podczas regulacji głośności.
+    if (millis() - lastRotationTime < 500) {
+        // Zresetuj stan debounce, aby uniknąć fałszywego wciśnięcia zaraz po zakończeniu obrotu
+        // lastButtonState = digitalRead(ENC_KEY); // Usunięcie tej linii zapobiega błędom w logice debounce
+        return;
     }
-    lastButtonState = buttonState;
+
+    int reading = digitalRead(ENC_KEY);
+
+    // Jeśli stan pinu się zmienił (szum lub wciśnięcie), resetujemy zegar
+    if (reading != lastButtonState) {
+        lastDebounceTime = millis();
+    }
+
+    // Jeśli stan jest stabilny przez 80ms (zwiększono, aby odfiltrować szum z obrotu)
+    if ((millis() - lastDebounceTime) > 80) {
+        if (reading != currentButtonState) {
+            currentButtonState = reading;
+            if (currentButtonState == LOW) {
+                // Przycisk obecnie nie pełni żadnej funkcji
+            }
+        }
+    }
+    lastButtonState = reading;
 }
 
 void setup()
 {
     Serial.begin(115200);
     delay(2000);
+
+    // Inicjalizacja Preferences i odczyt ustawień
+    preferences.begin("yoradio", false); // Namespace "yoradio", tryb RW
+    volume = preferences.getInt("volume", 18); // Domyślnie 18
+    currentStationIndex = preferences.getInt("station", 0); // Domyślnie 0
+    if (currentStationIndex >= numStations) currentStationIndex = 0;
 
     initAudio();
     initDisplay();
@@ -286,7 +303,38 @@ void loop()
     audio.loop();
     vTaskDelay(1);
 
-    handleVolume();
+    // Nowa logika enkodera: przeglądanie stacji
+    static long lastEncoderPos = 0;
+    long newEncoderPos = encoder.getPosition();
+
+    if (newEncoderPos != lastEncoderPos) {
+        lastRotationTime = millis(); // Zapisz czas ostatniego obrotu
+
+        if (newEncoderPos > lastEncoderPos) {
+            currentStationIndex++;
+        } else {
+            currentStationIndex--;
+        }
+
+        // Zapętlanie listy
+        if (currentStationIndex >= numStations) currentStationIndex = 0;
+        if (currentStationIndex < 0) currentStationIndex = numStations - 1;
+
+        // Zaktualizuj UI, aby pokazać podświetloną stację
+        char urlBuff[128];
+        snprintf(urlBuff, sizeof(urlBuff), "[%02d] %s", currentStationIndex, stations[currentStationIndex].url);
+        displayUrl(urlBuff);
+        displayStationName(stations[currentStationIndex].name);
+
+        pendingChange = true;
+        lastEncoderPos = newEncoderPos;
+    }
+
+    if (pendingChange && (millis() - lastRotationTime > 500)) {
+        pendingChange = false;
+        changeStation(currentStationIndex);
+    }
+
     handleEncoderButton();
     updateDiagnostics();
 }
