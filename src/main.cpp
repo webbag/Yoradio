@@ -148,7 +148,6 @@ void drawLayout() {
     // Linie oddzielające sekcje
     tft.drawFastHLine(1, 20, 318, ILI9341_DARKGREY);
     tft.drawFastHLine(1, 43, 318, ILI9341_DARKGREY);
-    tft.drawFastHLine(1, 138, 318, ILI9341_DARKGREY); // Linia pod tytułem (przesunięta wyżej)
     tft.drawFastHLine(1, 118, 318, ILI9341_DARKGREY); // Linia pod tytułem (przesunięta wyżej dla większego spektrum)
     tft.drawFastHLine(1, 188, 318, ILI9341_DARKGREY); // Linia pod spektrum
 }
@@ -197,7 +196,6 @@ void drawScrollingTitle() {
     uint16_t textColor = stationColors[currentStationIndex % (sizeof(stationColors) / sizeof(stationColors[0]))];
 
     if (titleChanged) {
-        tft.fillRect(5, 77, 310, 60, ILI9341_BLACK); // Wyczyść obszar tytułu (zmniejszony)
         tft.fillRect(5, 77, 310, 40, ILI9341_BLACK); // Wyczyść obszar tytułu (zmniejszony)
         titleChanged = false;
     }
@@ -220,12 +218,9 @@ void drawScrollingTitle() {
             titleCanvas->fillScreen(ILI9341_BLACK);
             titleCanvas->setTextColor(textColor);
             titleCanvas->setTextSize(2);
-            titleCanvas->setCursor(0 - titleScrollOffset, 22); // Wyśrodkowane w pionie (60px)
             titleCanvas->setCursor(0 - titleScrollOffset, 12); // Wyśrodkowane w pionie (40px)
             titleCanvas->print(currentSongTitle);
             
-            // Przut na ekran (wyśrodkowane w obszarze 90px: y=77 + 15 = 92)
-            tft.drawRGBBitmap(5, 77, titleCanvas->getBuffer(), 310, 60);
             // Przut na ekran
             tft.drawRGBBitmap(5, 77, titleCanvas->getBuffer(), 310, 40);
         }
@@ -237,10 +232,8 @@ void drawScrollingTitle() {
             titleCanvas->fillScreen(ILI9341_BLACK);
             titleCanvas->setTextColor(textColor);
             titleCanvas->setTextSize(2);
-            titleCanvas->setCursor(0, 22);
             titleCanvas->setCursor(0, 12);
             titleCanvas->print(currentSongTitle);
-            tft.drawRGBBitmap(5, 77, titleCanvas->getBuffer(), 310, 60);
             tft.drawRGBBitmap(5, 77, titleCanvas->getBuffer(), 310, 40);
             lastStaticDraw = titleScrollOffset;
             lastColor = textColor;
@@ -249,11 +242,10 @@ void drawScrollingTitle() {
 }
 
 void drawSpectrum() {
-    int barWidth = 8;
-    int barSpacing = 2;
-    int startX = 5;
+    int barWidth = 15;
+    int barSpacing = 4;
+    int startX = 8;
     int startY = 186; // Dół obszaru spektrum
-    int maxH = 65;    // Maksymalna wysokość słupka
     int maxH = 65;    // Zwiększona maksymalna wysokość słupka
     
     // Symulacja beatu (rytmu)
@@ -265,16 +257,16 @@ void drawSpectrum() {
     }
 
     // Strefy kolorów (VU meter style)
-    int zone1 = maxH * 0.4; // Granica zielony/żółty
-    int zone2 = maxH * 0.75; // Granica żółty/czerwony
+    int zone1 = maxH * 0.2; // Granica zielony/żółty (obniżona dla większej dynamiki)
+    int zone2 = maxH * 0.4; // Granica żółty/czerwony (obniżona dla większej dynamiki)
 
-    for (int i = 0; i < 32; i++) {
+    for (int i = 0; i < 16; i++) {
         // Symulacja spektrum (biblioteka audio nie udostępnia surowych danych)
         // Generujemy losową wysokość z wygładzaniem, aby wyglądało to naturalnie
         static int lastH[32] = {0};
         int targetH = random(0, maxH);
         
-        if (isBeat && i < 10) targetH = maxH; // Podbicie basu przy beacie
+        if (isBeat && i < 5) targetH = maxH; // Podbicie basu przy beacie
 
         lastH[i] = (lastH[i] * 9 + targetH) / 10; // Mocniejsze wygładzanie (wolniejszy ruch)
         int h = lastH[i];
@@ -288,7 +280,6 @@ void drawSpectrum() {
 
         // Czyszczenie tła powyżej słupka
         tft.fillRect(startX + i * (barWidth + barSpacing), startY - maxH, barWidth, maxH - h, ILI9341_BLACK);
-        tft.fillRect(startX + i * (barWidth + barSpacing), startY - h, barWidth, h, ILI9341_CYAN);
         
         // Rysowanie słupka z gradientem (strefami)
         int x = startX + i * (barWidth + barSpacing);
@@ -343,7 +334,6 @@ void initDisplay()
 
     // Inicjalizacja bufora dla przewijanego tekstu (310x60 pikseli)
     if (titleCanvas == nullptr) {
-        titleCanvas = new GFXcanvas16(310, 60);
         titleCanvas = new GFXcanvas16(310, 40);
     }
 }
