@@ -51,17 +51,45 @@ const Station stations[] = {
     {"10", "https://radio.pejpal.cloud/stream"},
     {"11", "https://dancewave.online/dance.mp3"},
     {"12", "http://198.15.94.34:8006/strumień"},
+    {"Dark", "http://dark.sh/mp3"},
+    {"RdMix Classic Rock 70s 80s 90s", "https://cast1.torontocast.com:4610/stream"},
+    {"RdMix DJSET 70s 80s 90s", "https://cast1.torontocast.com:4560/stream"},
+    {"Technolovers - BASS HOUSE", "https://stream.technolovers.fm/bass-house"},
+    {"Technolovers HOUSE", "https://stream.technolovers.fm/house"},
+    {"Yabiladi Azawan Amazigh", "https://radio.yabiladi.com:9002/;stream.mp3"},
+    {"Worldwide FM", "https://worldwide-fm.radiocult.fm/stream"},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    // {"", ""},
+    
+    
 };
 const int numStations = sizeof(stations) / sizeof(stations[0]);
 int currentStationIndex = 0;
 
 // Zmienne sterujące
-int volume = 12;                 // Zostawiamy na wypadek przyszłego użycia
+int volume = 8;                 // Zostawiamy na wypadek przyszłego użycia
 int lastButtonState = HIGH;      // Stan fizyczny pinu (do debounce)
 int currentButtonState = HIGH;   // Stan logiczny przycisku
 unsigned long lastDebounceTime = 0;
 unsigned long lastRotationTime = 0; // Czas ostatniego obrotu enkodera
 bool pendingChange = false;         // Flaga oczekująca na zmianę stacji
+
+// Zmienne do przewijania tekstu (Scrolling Text)
+GFXcanvas16 *titleCanvas = nullptr;
+char currentSongTitle[256] = "";
+int titleTextWidth = 0;
+int titleScrollOffset = 0;
+unsigned long lastTitleScrollTime = 0;
+bool titleChanged = false;
 
 // Funkcja obsługi przerwania (ISR) dla enkodera
 void IRAM_ATTR readEncoderISR() {
@@ -135,9 +163,69 @@ void displayStationName(const char* text) {
     updateText(5, 47, 310, 28, text, ILI9341_GREEN, 2);
 }
 
+// Zmodyfikowana funkcja - tylko ustawia tekst, rysowanie odbywa się w pętli
 void displaySongTitle(const char* text) {
-    // Obszar: x=1, y=75, w=318, h=92
-    updateText(5, 77, 310, 90, text, ILI9341_YELLOW, 2, true);
+    strncpy(currentSongTitle, text, sizeof(currentSongTitle) - 1);
+    currentSongTitle[sizeof(currentSongTitle) - 1] = 0;
+
+    if (titleCanvas) {
+        titleCanvas->setTextSize(2);
+        titleCanvas->setTextWrap(false);
+        int16_t x1, y1;
+        uint16_t w, h;
+        titleCanvas->getTextBounds(currentSongTitle, 0, 0, &x1, &y1, &w, &h);
+        titleTextWidth = w;
+    }
+
+    titleScrollOffset = 0;
+    titleChanged = true; // Flaga wymuszająca odświeżenie tła
+}
+
+void drawScrollingTitle() {
+    if (!titleCanvas) return;
+
+    if (titleChanged) {
+        tft.fillRect(5, 77, 310, 90, ILI9341_BLACK); // Wyczyść cały obszar tytułu
+        titleChanged = false;
+    }
+
+    bool scroll = (titleTextWidth > 310);
+    
+    if (scroll) {
+        // Dynamiczna prędkość przewijania: im dłuższy tekst, tym mniejsze opóźnienie (szybciej)
+        int scrollDelay = map(titleTextWidth, 310, 1200, 50, 10);
+        scrollDelay = constrain(scrollDelay, 10, 50);
+
+        if (millis() - lastTitleScrollTime > scrollDelay) { // Prędkość przewijania
+            titleScrollOffset += 2;
+            if (titleScrollOffset > titleTextWidth + 40) {
+                titleScrollOffset = -310; // Restart z prawej strony
+            }
+            lastTitleScrollTime = millis();
+            
+            // Rysowanie na Canvasie
+            titleCanvas->fillScreen(ILI9341_BLACK);
+            titleCanvas->setTextColor(ILI9341_YELLOW);
+            titleCanvas->setTextSize(2);
+            titleCanvas->setCursor(0 - titleScrollOffset, 22); // Wyśrodkowane w pionie (60px)
+            titleCanvas->print(currentSongTitle);
+            
+            // Przut na ekran (wyśrodkowane w obszarze 90px: y=77 + 15 = 92)
+            tft.drawRGBBitmap(5, 92, titleCanvas->getBuffer(), 310, 60);
+        }
+    } else {
+        // Jeśli tekst się mieści, rysujemy go statycznie tylko raz (lub gdy się zmienił)
+        static int lastStaticDraw = -1;
+        if (titleScrollOffset != lastStaticDraw) {
+            titleCanvas->fillScreen(ILI9341_BLACK);
+            titleCanvas->setTextColor(ILI9341_YELLOW);
+            titleCanvas->setTextSize(2);
+            titleCanvas->setCursor(0, 22);
+            titleCanvas->print(currentSongTitle);
+            tft.drawRGBBitmap(5, 92, titleCanvas->getBuffer(), 310, 60);
+            lastStaticDraw = titleScrollOffset;
+        }
+    }
 }
 
 void displayBufferBar(int val, int maxVal) {
@@ -171,6 +259,11 @@ void initDisplay()
     tft.begin();
     tft.setRotation(3); // WAŻNE: Ustawienie rotacji PRZED rysowaniem
     drawLayout();
+
+    // Inicjalizacja bufora dla przewijanego tekstu (310x60 pikseli)
+    if (titleCanvas == nullptr) {
+        titleCanvas = new GFXcanvas16(310, 60);
+    }
 }
 
 void initWiFi()
@@ -216,10 +309,10 @@ void changeStation(int index)
     audio.connecttohost(stations[currentStationIndex].url);
 
     char urlBuff[128];
-    snprintf(urlBuff, sizeof(urlBuff), "[%02d] %s", currentStationIndex, stations[currentStationIndex].url);
+    snprintf(urlBuff, sizeof(urlBuff), "%s", stations[currentStationIndex].url);
     displayUrl(urlBuff);
     displayStationName(stations[currentStationIndex].name);
-    displaySongTitle("..."); // Wyczyszczenie poprzedniego tytułu
+    displaySongTitle(""); // Reset tytułu
 }
 
 void handleEncoderButton()
@@ -273,7 +366,7 @@ void setup()
 void updateDiagnostics()
 {
     static uint32_t lastDebugTime = 0;
-    if (millis() - lastDebugTime > 1000) // Częstsza aktualizacja dla płynności
+    if (millis() - lastDebugTime > 2000) // Częstsza aktualizacja dla płynności
     {
         lastDebugTime = millis();
         uint32_t buffFilled = audio.inBufferFilled();
@@ -320,12 +413,6 @@ void loop()
         if (currentStationIndex >= numStations) currentStationIndex = 0;
         if (currentStationIndex < 0) currentStationIndex = numStations - 1;
 
-        // Zaktualizuj UI, aby pokazać podświetloną stację
-        char urlBuff[128];
-        snprintf(urlBuff, sizeof(urlBuff), "[%02d] %s", currentStationIndex, stations[currentStationIndex].url);
-        displayUrl(urlBuff);
-        displayStationName(stations[currentStationIndex].name);
-
         pendingChange = true;
         lastEncoderPos = newEncoderPos;
     }
@@ -337,4 +424,5 @@ void loop()
 
     handleEncoderButton();
     updateDiagnostics();
+    drawScrollingTitle(); // Obsługa przewijania w pętli głównej
 }
