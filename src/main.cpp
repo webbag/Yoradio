@@ -83,6 +83,9 @@ unsigned long lastDebounceTime = 0;
 unsigned long lastRotationTime = 0; // Czas ostatniego obrotu enkodera
 bool pendingChange = false;         // Flaga oczekująca na zmianę stacji
 
+// FFT (Equalizer)
+float fftPeak[32] = {0}; // Efekt opadających szczytów
+
 // Zmienne do przewijania tekstu (Scrolling Text)
 GFXcanvas16 *titleCanvas = nullptr;
 char currentSongTitle[256] = "";
@@ -145,7 +148,9 @@ void drawLayout() {
     // Linie oddzielające sekcje
     tft.drawFastHLine(1, 20, 318, ILI9341_DARKGREY);
     tft.drawFastHLine(1, 43, 318, ILI9341_DARKGREY);
-    tft.drawFastHLine(1, 168, 318, ILI9341_DARKGREY);
+    tft.drawFastHLine(1, 138, 318, ILI9341_DARKGREY); // Linia pod tytułem (przesunięta wyżej)
+    tft.drawFastHLine(1, 118, 318, ILI9341_DARKGREY); // Linia pod tytułem (przesunięta wyżej dla większego spektrum)
+    tft.drawFastHLine(1, 188, 318, ILI9341_DARKGREY); // Linia pod spektrum
 }
 
 void displayHeader(const char* text) {
@@ -184,8 +189,16 @@ void displaySongTitle(const char* text) {
 void drawScrollingTitle() {
     if (!titleCanvas) return;
 
+    // Paleta kolorów dla różnych stacji
+    const uint16_t stationColors[] = {
+        ILI9341_YELLOW, ILI9341_CYAN, ILI9341_GREEN, ILI9341_MAGENTA, 
+        ILI9341_RED, ILI9341_WHITE, ILI9341_ORANGE, 0xAD75 /* Light Blue */
+    };
+    uint16_t textColor = stationColors[currentStationIndex % (sizeof(stationColors) / sizeof(stationColors[0]))];
+
     if (titleChanged) {
-        tft.fillRect(5, 77, 310, 90, ILI9341_BLACK); // Wyczyść cały obszar tytułu
+        tft.fillRect(5, 77, 310, 60, ILI9341_BLACK); // Wyczyść obszar tytułu (zmniejszony)
+        tft.fillRect(5, 77, 310, 40, ILI9341_BLACK); // Wyczyść obszar tytułu (zmniejszony)
         titleChanged = false;
     }
 
@@ -205,26 +218,94 @@ void drawScrollingTitle() {
             
             // Rysowanie na Canvasie
             titleCanvas->fillScreen(ILI9341_BLACK);
-            titleCanvas->setTextColor(ILI9341_YELLOW);
+            titleCanvas->setTextColor(textColor);
             titleCanvas->setTextSize(2);
             titleCanvas->setCursor(0 - titleScrollOffset, 22); // Wyśrodkowane w pionie (60px)
+            titleCanvas->setCursor(0 - titleScrollOffset, 12); // Wyśrodkowane w pionie (40px)
             titleCanvas->print(currentSongTitle);
             
             // Przut na ekran (wyśrodkowane w obszarze 90px: y=77 + 15 = 92)
-            tft.drawRGBBitmap(5, 92, titleCanvas->getBuffer(), 310, 60);
+            tft.drawRGBBitmap(5, 77, titleCanvas->getBuffer(), 310, 60);
+            // Przut na ekran
+            tft.drawRGBBitmap(5, 77, titleCanvas->getBuffer(), 310, 40);
         }
     } else {
         // Jeśli tekst się mieści, rysujemy go statycznie tylko raz (lub gdy się zmienił)
         static int lastStaticDraw = -1;
-        if (titleScrollOffset != lastStaticDraw) {
+        static uint16_t lastColor = 0;
+        if (titleScrollOffset != lastStaticDraw || textColor != lastColor) {
             titleCanvas->fillScreen(ILI9341_BLACK);
-            titleCanvas->setTextColor(ILI9341_YELLOW);
+            titleCanvas->setTextColor(textColor);
             titleCanvas->setTextSize(2);
             titleCanvas->setCursor(0, 22);
+            titleCanvas->setCursor(0, 12);
             titleCanvas->print(currentSongTitle);
-            tft.drawRGBBitmap(5, 92, titleCanvas->getBuffer(), 310, 60);
+            tft.drawRGBBitmap(5, 77, titleCanvas->getBuffer(), 310, 60);
+            tft.drawRGBBitmap(5, 77, titleCanvas->getBuffer(), 310, 40);
             lastStaticDraw = titleScrollOffset;
+            lastColor = textColor;
         }
+    }
+}
+
+void drawSpectrum() {
+    int barWidth = 8;
+    int barSpacing = 2;
+    int startX = 5;
+    int startY = 186; // Dół obszaru spektrum
+    int maxH = 65;    // Maksymalna wysokość słupka
+    int maxH = 65;    // Zwiększona maksymalna wysokość słupka
+    
+    // Symulacja beatu (rytmu)
+    static unsigned long lastBeatTime = 0;
+    bool isBeat = false;
+    if (millis() - lastBeatTime > 500) { // Co 500ms (120 BPM)
+        lastBeatTime = millis();
+        isBeat = true;
+    }
+
+    // Strefy kolorów (VU meter style)
+    int zone1 = maxH * 0.4; // Granica zielony/żółty
+    int zone2 = maxH * 0.75; // Granica żółty/czerwony
+
+    for (int i = 0; i < 32; i++) {
+        // Symulacja spektrum (biblioteka audio nie udostępnia surowych danych)
+        // Generujemy losową wysokość z wygładzaniem, aby wyglądało to naturalnie
+        static int lastH[32] = {0};
+        int targetH = random(0, maxH);
+        
+        if (isBeat && i < 10) targetH = maxH; // Podbicie basu przy beacie
+
+        lastH[i] = (lastH[i] * 9 + targetH) / 10; // Mocniejsze wygładzanie (wolniejszy ruch)
+        int h = lastH[i];
+
+        if (h > maxH) h = maxH;
+        
+        // Peak hold
+        if (h > fftPeak[i]) fftPeak[i] = h;
+        else fftPeak[i] -= 0.5; // Dostosowanie opadania do rytmu
+        if (fftPeak[i] < 0) fftPeak[i] = 0;
+
+        // Czyszczenie tła powyżej słupka
+        tft.fillRect(startX + i * (barWidth + barSpacing), startY - maxH, barWidth, maxH - h, ILI9341_BLACK);
+        tft.fillRect(startX + i * (barWidth + barSpacing), startY - h, barWidth, h, ILI9341_CYAN);
+        
+        // Rysowanie słupka z gradientem (strefami)
+        int x = startX + i * (barWidth + barSpacing);
+        
+        // 1. Zielony (dół)
+        int h_green = (h > zone1) ? zone1 : h;
+        if (h_green > 0) tft.fillRect(x, startY - h_green, barWidth, h_green, ILI9341_GREEN);
+        
+        // 2. Żółty (środek)
+        int h_yellow = (h > zone2) ? (zone2 - zone1) : (h - zone1);
+        if (h > zone1) tft.fillRect(x, startY - zone1 - h_yellow, barWidth, h_yellow, ILI9341_YELLOW);
+        
+        // 3. Czerwony (góra)
+        int h_red = h - zone2;
+        if (h > zone2) tft.fillRect(x, startY - zone2 - h_red, barWidth, h_red, ILI9341_RED);
+
+        tft.drawFastHLine(startX + i * (barWidth + barSpacing), startY - (int)fftPeak[i], barWidth, ILI9341_RED);
     }
 }
 
@@ -263,6 +344,7 @@ void initDisplay()
     // Inicjalizacja bufora dla przewijanego tekstu (310x60 pikseli)
     if (titleCanvas == nullptr) {
         titleCanvas = new GFXcanvas16(310, 60);
+        titleCanvas = new GFXcanvas16(310, 40);
     }
 }
 
@@ -425,4 +507,5 @@ void loop()
     handleEncoderButton();
     updateDiagnostics();
     drawScrollingTitle(); // Obsługa przewijania w pętli głównej
+    drawSpectrum();       // Rysowanie spektrum
 }
