@@ -7,6 +7,8 @@
 #include "config.h"
 #include "RotaryEncoder.h"
 #include <Preferences.h>
+#include <time.h>
+#include <SunMoonCalc.h>
 
 // ===== KONFIGURACJA PINÓW =====
 #define TFT_CS 5
@@ -83,8 +85,20 @@ unsigned long lastDebounceTime = 0;
 unsigned long lastRotationTime = 0; // Czas ostatniego obrotu enkodera
 bool pendingChange = false;         // Flaga oczekująca na zmianę stacji
 
+// Statystyki CPU
+unsigned long cpuWorkTime = 0;
+float cpuLoad5 = 0.0;
+float cpuLoad10 = 0.0;
+float cpuLoad15 = 0.0;
+
 // FFT (Equalizer)
 float fftPeak[32] = {0}; // Efekt opadających szczytów
+
+// Zegar i WiFi
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 3600;      // UTC+1 (Dostosuj do swojej strefy)
+const int   daylightOffset_sec = 3600; // Czas letni
+
 
 // Zmienne do przewijania tekstu (Scrolling Text)
 GFXcanvas16 *titleCanvas = nullptr;
@@ -93,6 +107,11 @@ int titleTextWidth = 0;
 int titleScrollOffset = 0;
 unsigned long lastTitleScrollTime = 0;
 bool titleChanged = false;
+
+// Zmienne do cyklicznego wyświetlania info (URL / Słońce / Księżyc)
+char currentUrl[128] = "";
+unsigned long lastInfoSwitchTime = 0;
+int infoMode = 0; // 0: URL, 1: Słońce, 2: Księżyc
 
 // Funkcja obsługi przerwania (ISR) dla enkodera
 void IRAM_ATTR readEncoderISR() {
@@ -152,14 +171,99 @@ void drawLayout() {
     tft.drawFastHLine(1, 188, 318, ILI9341_DARKGREY); // Linia pod spektrum
 }
 
-void displayHeader(const char* text) {
-    // Obszar: x=1, y=1, w=318, h=18
-    updateText(5, 3, 310, 16, text, ILI9341_WHITE, 1);
+void drawWifiSignal(int x, int y, int rssi) {
+    // Czyść obszar ikony
+    tft.fillRect(x, y, 24, 16, ILI9341_BLACK);
+    
+    int bars = 0;
+    if (rssi > -55) bars = 4;
+    else if (rssi > -65) bars = 3;
+    else if (rssi > -75) bars = 2;
+    else if (rssi > -85) bars = 1;
+
+    for (int i = 0; i < 4; i++) {
+        int h = 4 + (i * 3); // Wysokość słupka
+        uint16_t color = (i < bars) ? ILI9341_WHITE : ILI9341_DARKGREY;
+        tft.fillRect(x + (i * 6), y + (14 - h), 4, h, color);
+    }
+}
+
+void drawClock(int x, int y) {
+    struct tm timeinfo;
+    if(!getLocalTime(&timeinfo)){
+        return;
+    }
+    char timeBuff[20];
+    strftime(timeBuff, sizeof(timeBuff), "%H:%M %d.%m", &timeinfo);
+    
+    // Wyświetl zegar (używamy updateText dla łatwego czyszczenia tła)
+    updateText(x, y, 135, 16, timeBuff, ILI9341_CYAN, 2); 
+}
+
+// Bitmapy ikon 16x16
+const unsigned char sunBitmap[] PROGMEM = {
+    0x00, 0x00, 0x04, 0x20, 0x08, 0x10, 0x10, 0x08, 0x00, 0x00, 0x07, 0xE0, 0x0F, 0xF0, 0x1F, 0xF8,
+    0x1F, 0xF8, 0x0F, 0xF0, 0x07, 0xE0, 0x00, 0x00, 0x10, 0x08, 0x08, 0x10, 0x04, 0x20, 0x00, 0x00
+};
+
+const unsigned char moonBitmap[] PROGMEM = {
+    0x00, 0x00, 0x00, 0x00, 0x01, 0xC0, 0x03, 0xE0, 0x07, 0xF0, 0x0E, 0x70, 0x0C, 0x38, 0x0C, 0x1C,
+    0x0C, 0x1C, 0x0C, 0x38, 0x0E, 0x70, 0x07, 0xF0, 0x03, 0xE0, 0x01, 0xC0, 0x00, 0x00, 0x00, 0x00
+};
+
+void drawSunMoonInfo() {
+    time_t now;
+    time(&now);
+    if (now < 100000) return; // Czas nieustawiony
+
+    SunMoonCalc smc(now, LATITUDE, LONGITUDE);
+    SunMoonCalc::Result result = smc.calculateSunAndMoonData();
+
+    char buff[64];
+    struct tm *ti;
+
+    // Czyść obszar info (taki sam jak dla URL)
+    tft.fillRect(5, 24, 310, 18, ILI9341_BLACK);
+    tft.setCursor(26, 28);
+    tft.setTextSize(1);
+    tft.setTextColor(ILI9341_YELLOW);
+
+    if (infoMode == 1) { // Słońce
+        char rise[10], set[10];
+        ti = localtime(&result.sun.rise);
+        strftime(rise, sizeof(rise), "%H:%M", ti);
+        ti = localtime(&result.sun.set);
+        strftime(set, sizeof(set), "%H:%M", ti);
+        
+        snprintf(buff, sizeof(buff), "%s - %s", rise, set);
+        tft.drawBitmap(5, 25, sunBitmap, 16, 16, ILI9341_YELLOW);
+        tft.print(buff);
+    } 
+    else if (infoMode == 2) { // Księżyc
+        char rise[10], set[10];
+        if (result.moon.rise) {
+            ti = localtime(&result.moon.rise);
+            strftime(rise, sizeof(rise), "%H:%M", ti);
+        } else strcpy(rise, "--:--");
+        
+        if (result.moon.set) {
+            ti = localtime(&result.moon.set);
+            strftime(set, sizeof(set), "%H:%M", ti);
+        } else strcpy(set, "--:--");
+
+        tft.setTextColor(ILI9341_LIGHTGREY);
+        snprintf(buff, sizeof(buff), "%s - %s (%d%%)", rise, set, (int)(result.moon.illumination * 100));
+        tft.drawBitmap(5, 25, moonBitmap, 16, 16, ILI9341_LIGHTGREY);
+        tft.print(buff);
+    }
 }
 
 void displayUrl(const char* text) {
-    // Obszar: x=1, y=22, w=318, h=20
-    updateText(5, 24, 310, 18, text, ILI9341_CYAN, 1);
+    strncpy(currentUrl, text, sizeof(currentUrl) - 1);
+    // Wymuś natychmiastowe wyświetlenie URL
+    infoMode = 0;
+    lastInfoSwitchTime = millis();
+    updateText(5, 24, 310, 18, currentUrl, ILI9341_CYAN, 1);
 }
 
 void displayStationName(const char* text) {
@@ -300,8 +404,30 @@ void drawSpectrum() {
     }
 }
 
-void displayBufferBar(int val, int maxVal) {
-    drawBar(5, 190, 310, 15, val, maxVal, "BUF", ILI9341_ORANGE);
+void displayFooter(int bufVal, int bufMax) {
+    // Wyczyść stopkę
+    tft.fillRect(0, 195, 320, 45, ILI9341_BLACK);
+
+    tft.setTextColor(ILI9341_LIGHTGREY);
+    tft.setTextSize(1);
+
+    // Linia 1: Bufor % i Uptime
+    int bufPct = (bufMax > 0) ? (bufVal * 100 / bufMax) : 0;
+    unsigned long up = millis() / 1000;
+    int d = up / 86400;
+    int h = (up % 86400) / 3600;
+    int m = (up % 3600) / 60;
+    int s = up % 60;
+
+    tft.setCursor(5, 198);
+    tft.printf("Buf: %d%%   Uptime: %dd %02d:%02d:%02d", bufPct, d, h, m, s);
+
+    // Linia 2: CPU Load (5/10/15m) i RAM
+    tft.setCursor(5, 215);
+    tft.printf("CPU: %d/%d/%d%%", (int)cpuLoad5, (int)cpuLoad10, (int)cpuLoad15);
+
+    uint32_t freeRam = ESP.getFreeHeap();
+    tft.printf("  RAM: %uKB", freeRam / 1024);
 }
 
 // ===== SYSTEM CALLBACKÓW AUDIO =====
@@ -322,6 +448,21 @@ void my_audio_info(Audio::msg_t m)
         break;
     default:
         break;
+    }
+}
+
+void handleInfoArea() {
+    if (millis() - lastInfoSwitchTime > 5000) { // Zmieniaj co 5 sekund
+        lastInfoSwitchTime = millis();
+        infoMode = (infoMode + 1) % 3; // 0->1->2->0
+
+        if (infoMode == 0) {
+            // Powrót do URL
+            updateText(5, 24, 310, 18, currentUrl, ILI9341_CYAN, 1);
+        } else {
+            // Słońce lub Księżyc
+            drawSunMoonInfo();
+        }
     }
 }
 
@@ -349,6 +490,9 @@ void initWiFi()
     }
     Serial.println("\nWiFi OK!");
     displayStationName("WiFi OK!");
+
+    // Konfiguracja czasu (NTP)
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
 }
 
 void initAudio()
@@ -423,7 +567,7 @@ void setup()
 
     // Inicjalizacja Preferences i odczyt ustawień
     preferences.begin("yoradio", false); // Namespace "yoradio", tryb RW
-    volume = preferences.getInt("volume", 18); // Domyślnie 18
+    volume = preferences.getInt("volume", volume); // Domyślnie 18
     currentStationIndex = preferences.getInt("station", 0); // Domyślnie 0
     if (currentStationIndex >= numStations) currentStationIndex = 0;
 
@@ -438,8 +582,22 @@ void setup()
 void updateDiagnostics()
 {
     static uint32_t lastDebugTime = 0;
-    if (millis() - lastDebugTime > 2000) // Częstsza aktualizacja dla płynności
+    if (millis() - lastDebugTime > 1000) // Aktualizacja co 1s dla zegara
     {
+        // Obliczanie obciążenia CPU
+        unsigned long interval = millis() - lastDebugTime;
+        float currentLoad = (float)cpuWorkTime / (interval * 1000.0) * 100.0;
+        if (currentLoad > 100.0) currentLoad = 100.0;
+        cpuWorkTime = 0; // Reset licznika pracy
+
+        // Aktualizacja średnich (EMA)
+        // Alpha = 2 / (N + 1), gdzie N to liczba próbek (sekund)
+        // 5 min = 300s, 10 min = 600s, 15 min = 900s
+        cpuLoad5  = (currentLoad * 0.0066) + (cpuLoad5  * 0.9934);
+        cpuLoad10 = (currentLoad * 0.0033) + (cpuLoad10 * 0.9967);
+        cpuLoad15 = (currentLoad * 0.0022) + (cpuLoad15 * 0.9978);
+
+
         lastDebugTime = millis();
         uint32_t buffFilled = audio.inBufferFilled();
         uint32_t buffTotal = audio.getInBufferSize();
@@ -455,18 +613,24 @@ void updateDiagnostics()
         Serial.printf("Stream Time: %u s | Duration: %u s\n", audio.getAudioCurrentTime(), audio.getAudioFileDuration());
         Serial.println("---------------------------");
 
+        // 1. Info o dźwięku (lewa strona)
         char headBuff[64];
-        snprintf(headBuff, sizeof(headBuff), "%uHz   %ukbps       RSSI %ddBm", 
-                 audio.getSampleRate(), audio.getBitRate()/1000, WiFi.RSSI());
-        displayHeader(headBuff);
+        snprintf(headBuff, sizeof(headBuff), "%uHz %ukbps", audio.getSampleRate(), audio.getBitRate()/1000);
+        updateText(5, 3, 140, 16, headBuff, ILI9341_LIGHTGREY, 1);
 
-        displayBufferBar(buffFilled, buffTotal);
+        // 2. Zegar i WiFi (prawa strona)
+        drawClock(150, 1);      // Zegar na środku/prawej
+        drawWifiSignal(290, 3, WiFi.RSSI()); // Ikona WiFi przy krawędzi
+
+        displayFooter(buffFilled, buffTotal);
     }
 }
 void loop()
 {
+    unsigned long startLoop = micros(); // Start pomiaru czasu pracy
+
     audio.loop();
-    vTaskDelay(1);
+    // vTaskDelay(1); // Przeniesione na koniec
 
     // Nowa logika enkodera: przeglądanie stacji
     static long lastEncoderPos = 0;
@@ -497,5 +661,9 @@ void loop()
     handleEncoderButton();
     updateDiagnostics();
     drawScrollingTitle(); // Obsługa przewijania w pętli głównej
+    handleInfoArea();     // Obsługa cyklicznego wyświetlania info
     drawSpectrum();       // Rysowanie spektrum
+
+    cpuWorkTime += (micros() - startLoop); // Sumowanie czasu pracy
+    vTaskDelay(1); // Oddanie czasu procesora (Idle)
 }
